@@ -26,23 +26,20 @@ namespace KotchatBot
             {
 
                 var folderDsOptions = new FolderDataSourceOptions();
+                var imgurOptions = new ImgurDataSourceOptions();
                 var generalOptions = new GeneralOptions();
                 _configuration.GetSection(nameof(FolderDataSourceOptions)).Bind(folderDsOptions);
+                _configuration.GetSection(nameof(ImgurDataSourceOptions)).Bind(imgurOptions);
                 _configuration.GetSection(nameof(GeneralOptions)).Bind(generalOptions);
 
-                //string hostAddr = @"https://kotchan.fun";
-                //string relativeAddress = @"chat/int";
-                //var name = "Bot#chip7";
-                //var convo = "";
                 var sender = new MessageSender(new Uri(new Uri(generalOptions.HostAddress), generalOptions.RelativeAddress), generalOptions.BotName);
 
                 var ds = new DataStorage();
 
-                //var feedAddress = @"https://kotchan.fun/data/int";
                 var userMessagesParser = new UserMessagesParser(generalOptions.UserMessagesFeedAddress, ds);
 
-                //var imagesPath = @"\\vboxsrv\int";
-                RandomImageSource imgSource = new FolderImageSource(folderDsOptions.Path);
+                //RandomImageSource imgSource = new FolderImageSource(folderDsOptions.Path);
+                RandomImageSource imgSource = new ImgurImageSource(imgurOptions.ClientId, imgurOptions.Tags, ds);
 
                 var mgr = new Manager(sender, userMessagesParser, imgSource);
 
@@ -381,7 +378,7 @@ namespace KotchatBot
 
     public interface RandomImageSource
     {
-        string NextFile();
+        Task<string> NextFile();
     }
 
     public class FolderImageSource : RandomImageSource
@@ -462,7 +459,7 @@ namespace KotchatBot
                 ListImagesInternal(subDir, foundFiles, includeSubdirs, ct);
         }
 
-        public string NextFile()
+        public async Task<string> NextFile()
         {
             while (_usedFiles.Count != _allFiles.Length)
             {
@@ -476,7 +473,155 @@ namespace KotchatBot
             // start all over again
             _log.Info("All known files have been returned, starting to repeat already returned");
             _usedFiles.Clear();
-            return NextFile();
+            return await NextFile();
+        }
+    }
+
+    public class ImgurImageSource : RandomImageSource
+    {
+        private readonly string _clientId;
+        private readonly string[] _tags;
+        private readonly DataStorage _dataSource;
+        private readonly Logger _log;
+        private readonly HttpClient _httpClient;
+        private Random _rnd;
+        private bool _isInitialized = false; // TODO refactor
+
+        public ImgurImageSource(string clientId, string[] tags, DataStorage ds)
+        {
+            if (string.IsNullOrEmpty(clientId))
+            {
+                throw new ArgumentException("message", nameof(clientId));
+            }
+
+            _clientId = clientId;
+            _tags = tags ?? throw new ArgumentNullException(nameof(tags));
+            _dataSource = ds ?? throw new ArgumentNullException(nameof(ds));
+
+            _log = LogManager.GetCurrentClassLogger();
+            _httpClient = new HttpClient();
+            _rnd = new Random();
+
+            Task.Factory.StartNew(() => InitDatabase());
+            _log.Info($"Imgur source started");
+        }
+
+        public async Task<string> NextFile()
+        {
+            var today = DateTime.UtcNow.Date;
+            var images = _dataSource.GetImgurImagesForDate(today).ToList();
+
+            while(!_isInitialized)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(3));
+            }
+
+            var totallyRandomImage = images[_rnd.Next(0, images.Count - 1)];
+
+            while (images.Count != 0)
+            {
+                var index = _rnd.Next(0, images.Count - 1);
+                var image = images[index];
+                if (!image.Shown)
+                {
+                    totallyRandomImage = image;
+                    break;
+                }
+            }
+
+            var fullPath = await DownloadFile(totallyRandomImage.Link);
+            _dataSource.MarkImgurImageAsShown(totallyRandomImage);
+            return fullPath;
+        }
+
+        private async Task<string> DownloadFile(string uri)
+        {
+            string fileName = uri.Substring(uri.LastIndexOf('/') + 1);
+            var directory = Directory.GetCurrentDirectory() + "\\imgs\\";
+            if (!Directory.Exists(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            var fullPath = directory + fileName;
+
+            if (!File.Exists(fullPath))
+            {
+                byte[] fileBytes = await _httpClient.GetByteArrayAsync(uri);
+                File.WriteAllBytes(fullPath, fileBytes);
+            }
+
+            return fullPath;
+        }
+
+        private async Task InitDatabase()
+        {
+            while (true)
+            {
+                var today = DateTime.UtcNow.Date;
+                var imagesCount = _dataSource.GetCountImgurImagesForDate(today);
+
+                if (imagesCount < 500)
+                {
+                    for (int pageNumber = 0; pageNumber < 10; pageNumber++)
+                    {
+                        string[] images = null;
+
+                        try
+                        {
+                            images = await GetImgurImages(pageNumber);
+                            if (images.Length == 0)
+                            {
+                                _log.Error($"Fetched 0 images from Imgur for page {pageNumber}");
+                                break;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.Error(ex, $"Can't get data from Imgur");
+                            break;
+                        }
+
+                        _dataSource.AddImgurImages(images, today);
+                    }
+                }
+
+                _isInitialized = true;
+                _log.Info($"Imgur source initialized");
+
+                await Task.Delay(TimeSpan.FromMinutes(10));
+            }
+        }
+
+        private async Task<string[]> GetImgurImages(int pageNumber)
+        {
+            string GetAddress(int page) => $"https://api.imgur.com/3/gallery/user/time/day/{page}";
+
+            using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, GetAddress(pageNumber)))
+            {
+                request.Headers.Add("Connection", "keep-alive");
+                request.Headers.Authorization = new AuthenticationHeaderValue("Client-ID", "766263aaa4c9882");
+
+                using (var resp = await _httpClient.SendAsync(request))
+                {
+                    var responseContent = await resp.Content.ReadAsStringAsync();
+                    if (!resp.IsSuccessStatusCode)
+                    {
+                        _log.Error($"Can't get data from Imgur: {Environment.NewLine} {responseContent}");
+                        return Array.Empty<string>();
+                    }
+
+                    var gallery = JsonConvert.DeserializeObject<ImgurGalleryResponse>(responseContent);
+                    if (!gallery.success)
+                    {
+                        _log.Error($"Can't get data from Imgur: {Environment.NewLine} Status: {gallery.status}");
+                        return Array.Empty<string>();
+                    }
+
+                    var images = gallery.data.Where(x => x.images != null).Select(x => x.images.First().link).ToArray();
+                    return images;
+                }
+            }
         }
     }
 
@@ -498,16 +643,22 @@ namespace KotchatBot
             _log.Info($"Manager started");
         }
 
-
-        private void MainLoop()
+        private async Task MainLoop()
         {
             while (true)
             {
                 var message = _userMessagesParser.GetNextMessage(TimeSpan.FromSeconds(3));
                 if (message != null)
                 {
-                    var image = _imagesSource.NextFile();
-                    _messageSender.Send($">>{message.Value.id}", image);
+                    try
+                    {
+                        var image = await _imagesSource.NextFile();
+                        _messageSender.Send($">>{message.Value.id}", image);
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Error(ex);
+                    }
                 }
             }
         }
