@@ -1,3 +1,5 @@
+using KotchatBot.Dto;
+using KotchatBot.Interfaces;
 using Newtonsoft.Json;
 using NLog;
 using System;
@@ -5,23 +7,26 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-using KotchatBot.Interfaces;
-using KotchatBot.Dto;
 
 namespace KotchatBot.Core
 {
     public class UserMessagesParser : IWorker
     {
+        private const int USER_INPUT_WAIT_INTERVAL_SECONDS = 3;
+
         private readonly string _messagesFeedAddress;
         private readonly IDataStorage _dataStorage;
         private readonly HttpClient _client;
-        private readonly TimeSpan _sleepTime;
-        private readonly HashSet<string> _processedMessages; // TODO make restrictions on items amount
         private readonly Logger _log;
         private readonly CancellationTokenSource _cts;
-        private BlockingCollection<(string id, string body)> _userCommands;
+
+        private BlockingCollection<CommandDto> _usersCommands;
+
+        private readonly Lazy<HashSet<string>> _processedMessages;
+        private HashSet<string> ProcessedMessages => _processedMessages.Value;
 
         public UserMessagesParser(string messagesFeedAddress, IDataStorage dataStorage)
         {
@@ -33,17 +38,16 @@ namespace KotchatBot.Core
             _messagesFeedAddress = messagesFeedAddress;
             _dataStorage = dataStorage;
             _client = new HttpClient();
-            _sleepTime = TimeSpan.FromSeconds(3);
-            _processedMessages = _dataStorage.GetAllPostsWithResponsesForLastDay().ToHashSet(); // TODO make lazy
+            _processedMessages = new Lazy<HashSet<string>>(() => _dataStorage.GetAllPostsWithResponsesForLastDay().ToHashSet(), isThreadSafe: true);
             _log = LogManager.GetCurrentClassLogger();
             _cts = new CancellationTokenSource();
-            _userCommands = new BlockingCollection<(string id, string body)>(new ConcurrentQueue<(string id, string body)>());
+            _usersCommands = new BlockingCollection<CommandDto>(new ConcurrentQueue<CommandDto>());
 
             Task.Factory.StartNew(() => WokerLoopAsync());
             _log.Info($"Feed parser started");
         }
 
-        public (string id, string body)? GetNextMessage(TimeSpan waitInterval) // TODO make async
+        public CommandDto GetNextMessage(TimeSpan waitInterval) // TODO make async
         {
             var cts = new CancellationTokenSource();
             cts.CancelAfter(waitInterval);
@@ -51,7 +55,7 @@ namespace KotchatBot.Core
 
             try
             {
-                return _userCommands.Take(token);
+                return _usersCommands.Take(token);
             }
             catch (OperationCanceledException) // TODO rewrite without exception
             {
@@ -71,35 +75,50 @@ namespace KotchatBot.Core
 
         private async Task WokerLoopAsync()
         {
+            var userCommandPattern = @"\.[a-z]+ *[^.]\w+";
+            // should match:
+            //.command parameter but not the rest
+            //Should not match at all.
+            //.command .differetCommand but not the rest
+            //Should not match.Either
+            var regex = new Regex(userCommandPattern);
+
             while (!_cts.IsCancellationRequested)
             {
                 var feed = await _client.GetStringAsync(_messagesFeedAddress);
-                var messages = JsonConvert.DeserializeObject<FeedItem[]>(feed);
-                var newMessages = messages
-                    .Where(m =>
-                    m.body.ToLower().Contains(".random") &&
-                    !_processedMessages.Contains(m.count.ToString())).ToArray();
+                var newMessages = JsonConvert.DeserializeObject<FeedItem[]>(feed)
+                    // if bot restarted, filter out old messages
+                    .Where(m => !ProcessedMessages.Contains(m.count.ToString())).ToArray();
 
-                foreach (var m in newMessages.OrderBy(x => x.date))
+                foreach (var message in newMessages.OrderBy(x => x.date))
                 {
-                    var postNum = m.count.ToString();
-                    _userCommands.Add((postNum, m.body));
-                    _processedMessages.Add(postNum);
+                    var matches = regex.Matches(message.body);
+                    var postNumber = message.count.ToString();
 
-                    try
+                    foreach (Match m in matches)
                     {
-                        _dataStorage.MessageSentTo(postNum);
-                        _log.Info($"Found: {m.body}");
+                        CommandDto commandDto = ExtractCommand(postNumber, m);
 
-                    }
-                    catch (Exception ex)
-                    {
-                        _log.Error(ex);
+                        _usersCommands.Add(commandDto);
+                        ProcessedMessages.Add(postNumber);
+
+                        _log.Info($"Found: {commandDto}");
                     }
                 }
 
-                await Utils.GetResultOrCancelledAsync(async () => await Task.Delay(_sleepTime, _cts.Token));
+                await Utils.GetResultOrCancelledAsync(async () => await Task.Delay(USER_INPUT_WAIT_INTERVAL_SECONDS, _cts.Token));
             }
+        }
+
+        private static CommandDto ExtractCommand(string postNumber, Match m)
+        {
+            var data = m.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            return new CommandDto()
+            {
+                Command = data[0],
+                CommandArgument = data.Length > 1 ? data[1] : "",
+                PostNumber = postNumber,
+            };
         }
     }
 }

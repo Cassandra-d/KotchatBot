@@ -42,14 +42,31 @@ namespace KotchatBot.Core
             _log.Info($"Imgur source started");
         }
 
-        public async Task<string> NextFile()
+        public async Task<string> NextFile(string parameter)
         {
-            var today = DateTime.UtcNow.Date;
-            var images = _dataSource.GetImgurImagesForDate(today).ToList();
-
-            while(!_isInitialized)
+            while (!_isInitialized)
             {
-                await Task.Delay(TimeSpan.FromSeconds(3));
+                await Task.Delay(TimeSpan.FromSeconds(5));
+            }
+
+            var today = DateTime.UtcNow.Date;
+            var images = _dataSource.GetImgurImagesForDate(today, parameter).ToList();
+
+            if (!string.IsNullOrEmpty(parameter) && images.Count == 0)
+            {
+                // we don't have images for that specific subreddit
+                // let's upload several
+                var baseAddress = $"https://api.imgur.com/3/gallery/r/{parameter}/time/day/";
+                _dataSource.AddImgurImages(await GetImgurImages(0, baseAddress), today, parameter);
+                _dataSource.AddImgurImages(await GetImgurImages(0, baseAddress), today, parameter);
+
+                images = _dataSource.GetImgurImagesForDate(today, parameter).ToList();
+
+                if (images.Count == 0)
+                {
+                    // Imgur has no pics for parameter, let's get default
+                    images = _dataSource.GetImgurImagesForDate(today, tag: "").ToList();
+                }
             }
 
             var totallyRandomImage = images[_rnd.Next(0, images.Count - 1)];
@@ -68,6 +85,11 @@ namespace KotchatBot.Core
             var fullPath = await DownloadFile(totallyRandomImage.Link);
             _dataSource.MarkImgurImageAsShown(totallyRandomImage);
             return fullPath;
+        }
+
+        public async Task<string> NextFile()
+        {
+            return await NextFile("");
         }
 
         private async Task<string> DownloadFile(string uri)
@@ -95,7 +117,7 @@ namespace KotchatBot.Core
             while (true)
             {
                 var today = DateTime.UtcNow.Date;
-                var imagesCount = _dataSource.GetCountImgurImagesForDate(today);
+                var imagesCount = _dataSource.GetImgurImagesForDate(today, tag: "").Length;
 
                 if (imagesCount < 500)
                 {
@@ -105,7 +127,8 @@ namespace KotchatBot.Core
 
                         try
                         {
-                            images = await GetImgurImages(pageNumber);
+                            var baseAddress = @"https://api.imgur.com/3/gallery/user/time/day/";
+                            images = await GetImgurImages(pageNumber, baseAddress);
                             if (images.Length == 0)
                             {
                                 _log.Error($"Fetched 0 images from Imgur for page {pageNumber}");
@@ -118,7 +141,7 @@ namespace KotchatBot.Core
                             break;
                         }
 
-                        _dataSource.AddImgurImages(images, today);
+                        _dataSource.AddImgurImages(images, today, tag: "");
                     }
                 }
 
@@ -129,14 +152,14 @@ namespace KotchatBot.Core
             }
         }
 
-        private async Task<string[]> GetImgurImages(int pageNumber)
+        private async Task<string[]> GetImgurImages(int pageNumber, string baseAddress)
         {
-            string GetAddress(int page) => $"https://api.imgur.com/3/gallery/user/time/day/{page}";
+            string GetAddress(int page) => $"{baseAddress}{page}";
 
             using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, GetAddress(pageNumber)))
             {
                 request.Headers.Add("Connection", "keep-alive");
-                request.Headers.Authorization = new AuthenticationHeaderValue("Client-ID", "766263aaa4c9882");
+                request.Headers.Authorization = new AuthenticationHeaderValue("Client-ID", _clientId);
 
                 using (var resp = await _httpClient.SendAsync(request))
                 {
@@ -154,7 +177,16 @@ namespace KotchatBot.Core
                         return Array.Empty<string>();
                     }
 
-                    var images = gallery.data.Where(x => x.images != null).Select(x => x.images.First().link).ToArray();
+                    long sixMegabytes = 6291456; // bytes
+                    var images = gallery.data
+                        .Where(x => x.images != null ||
+                                    (x.link?.Contains("jpg") ?? false) ||
+                                    (x.link?.Contains("png") ?? false) ||
+                                    (x.link?.Contains("mp4") ?? false) ||
+                                    (x.link?.Contains("jpeg") ?? false))
+                        .Select(x => x.images?.Where(z => z.size <= sixMegabytes).FirstOrDefault()?.link ?? x.link)
+                        .Where(y => y != null)
+                        .ToArray();
                     return images;
                 }
             }

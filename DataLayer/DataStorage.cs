@@ -14,6 +14,8 @@ namespace KotchatBot.DataLayer
         public DataStorage()
         {
             _generalDb = new LiteDatabase(GENERAL_DB_NAME);
+            _generalDb.Mapper.EmptyStringToNull = false;
+            _generalDb.Mapper.SerializeNullValues = true;
             _generalDb.Rebuild();
         }
 
@@ -38,24 +40,17 @@ namespace KotchatBot.DataLayer
             return results;
         }
 
-        public int GetCountImgurImagesForDate(DateTime today)
+        public void AddImgurImages(string[] images, DateTime date, string tag)
         {
             var col = GetImgurImagesCollection();
-            var count = col.Query().Where(x => x.Timestamp >= today).Count();
-            return count;
-        }
-
-        public void AddImgurImages(string[] images, DateTime date)
-        {
-            var col = GetImgurImagesCollection();
-            var objs = images.Select(x => new ImgurImageDto { Link = x, Shown = false, Tag = "", Timestamp = date });
+            var objs = images.Select(x => new ImgurImageDto { Link = x, Shown = false, Tag = tag, Timestamp = date });
             col.Insert(objs);
         }
 
-        public ImgurImageDto[] GetImgurImagesForDate(DateTime today)
+        public ImgurImageDto[] GetImgurImagesForDate(DateTime today, string tag)
         {
             var col = GetImgurImagesCollection();
-            var result = col.Query().Where(x => x.Timestamp >= today);
+            var result = col.Query().Where(x => x.Timestamp >= today && x.Tag == tag);
             return result.ToArray();
         }
 

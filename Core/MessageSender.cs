@@ -17,11 +17,10 @@ namespace KotchatBot.Core
     {
         private readonly Uri _postAddress;
         private readonly string _name;
-        private readonly BlockingCollection<string> _messagesQ;
+        private readonly BlockingCollection<(string message, string pictureName)> _messagesQ;
         private readonly Logger _log;
         private readonly HttpClient _client;
         private readonly CookieContainer _cookies;
-        private const string DATA_SEPARATOR = "______";
         private readonly bool _isInitialized = true;
         private readonly CancellationTokenSource _cts;
         private DateTime _lastMessageSent;
@@ -35,7 +34,8 @@ namespace KotchatBot.Core
 
             _postAddress = postAddress;
             _name = name;
-            _messagesQ = new BlockingCollection<string>(new ConcurrentQueue<string>());
+            var internalCollection = new ConcurrentQueue<(string message, string pictureName)>();
+            _messagesQ = new BlockingCollection<(string message, string pictureName)>(internalCollection);
             _lastMessageSent = DateTime.MinValue;
             _cts = new CancellationTokenSource();
             _log = LogManager.GetCurrentClassLogger();
@@ -68,8 +68,7 @@ namespace KotchatBot.Core
                 throw new InvalidOperationException("Sender isn't initialized properly");
             }
 
-            var data = $"{msg}{DATA_SEPARATOR}{pictureName}";
-            _messagesQ.Add(data);
+            _messagesQ.Add((msg, pictureName));
         }
 
         public void Stop()
@@ -108,8 +107,7 @@ namespace KotchatBot.Core
 
                 try
                 {
-                    var arr = message.Split(new[] { DATA_SEPARATOR }, StringSplitOptions.None);
-                    await SendInternal(arr[0], arr[1]);
+                    await SendInternal(message.message, message.pictureName);
                 }
                 catch (Exception ex)
                 {

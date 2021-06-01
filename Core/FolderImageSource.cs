@@ -105,5 +105,10 @@ namespace KotchatBot.Core
             _usedFiles.Clear();
             return await NextFile();
         }
+
+        public Task<string> NextFile(string parameter = null)
+        {
+            return NextFile();
+        }
     }
 }
