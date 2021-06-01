@@ -1,4 +1,4 @@
-﻿namespace KotchatBot
+﻿namespace KotchatBot.Dto
 {
 
     public class ImgurGalleryResponse

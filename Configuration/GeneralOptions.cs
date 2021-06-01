@@ -1,4 +1,4 @@
-﻿namespace KotchatBot
+﻿namespace KotchatBot.Configuration
 {
     public class GeneralOptions
     {

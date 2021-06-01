@@ -1,10 +1,12 @@
-﻿using LiteDB;
+﻿using KotchatBot.Dto;
+using KotchatBot.Interfaces;
+using LiteDB;
 using System;
 using System.Linq;
 
-namespace KotchatBot
+namespace KotchatBot.DataLayer
 {
-    public class DataStorage : IDisposable
+    public class DataStorage : IDataStorage
     {
         private const string GENERAL_DB_NAME = @"GeneralData.db";
         private readonly LiteDatabase _generalDb; // TODO lazy singleton
@@ -57,7 +59,7 @@ namespace KotchatBot
             return result.ToArray();
         }
 
-        internal void MarkImgurImageAsShown(ImgurImageDto image)
+        public void MarkImgurImageAsShown(ImgurImageDto image)
         {
             var col = GetImgurImagesCollection();
             image.Shown = true;
@@ -68,20 +70,5 @@ namespace KotchatBot
         {
             _generalDb?.Dispose();
         }
-    }
-
-    public class PostedResponseDto
-    {
-        public string PostNumber { get; set; }
-        public long Timestamp { get; set; }
-    }
-
-    public class ImgurImageDto
-    {
-        public int Id { get; set; }
-        public string Link { get; set; }
-        public DateTime Timestamp { get; set; }
-        public string Tag { get; set; }
-        public bool Shown { get; set; }
     }
 }

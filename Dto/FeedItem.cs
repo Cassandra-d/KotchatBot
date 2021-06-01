@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace KotchatBot
+namespace KotchatBot.Dto
 {
     public class FeedItem
     {
