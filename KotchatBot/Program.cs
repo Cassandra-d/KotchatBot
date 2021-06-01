@@ -37,8 +37,8 @@ namespace KotchatBot
 
                 await host.RunAsync();
 
-                var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-                await _manager.Stop(cts.Token);
+                _manager.Stop();
+                await Task.Delay(TimeSpan.FromSeconds(1)); // wait for proper cancellation of everything
             }
         }
 

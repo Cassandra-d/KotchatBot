@@ -12,7 +12,7 @@ using KotchatBot.Dto;
 
 namespace KotchatBot.Core
 {
-    public class UserMessagesParser
+    public class UserMessagesParser : IWorker
     {
         private readonly string _messagesFeedAddress;
         private readonly IDataStorage _dataStorage;
@@ -20,7 +20,8 @@ namespace KotchatBot.Core
         private readonly TimeSpan _sleepTime;
         private readonly HashSet<string> _processedMessages; // TODO make restrictions on items amount
         private readonly Logger _log;
-        private BlockingCollection<(string id, string body)> _messages;
+        private readonly CancellationTokenSource _cts;
+        private BlockingCollection<(string id, string body)> _userCommands;
 
         public UserMessagesParser(string messagesFeedAddress, IDataStorage dataStorage)
         {
@@ -35,13 +36,14 @@ namespace KotchatBot.Core
             _sleepTime = TimeSpan.FromSeconds(3);
             _processedMessages = _dataStorage.GetAllPostsWithResponsesForLastDay().ToHashSet(); // TODO make lazy
             _log = LogManager.GetCurrentClassLogger();
-            _messages = new BlockingCollection<(string id, string body)>(new ConcurrentQueue<(string id, string body)>());
+            _cts = new CancellationTokenSource();
+            _userCommands = new BlockingCollection<(string id, string body)>(new ConcurrentQueue<(string id, string body)>());
 
-            Task.Factory.StartNew(() => HandleMessages());
+            Task.Factory.StartNew(() => WokerLoopAsync());
             _log.Info($"Feed parser started");
         }
 
-        public (string id, string body)? GetNextMessage(TimeSpan waitInterval)
+        public (string id, string body)? GetNextMessage(TimeSpan waitInterval) // TODO make async
         {
             var cts = new CancellationTokenSource();
             cts.CancelAfter(waitInterval);
@@ -49,7 +51,7 @@ namespace KotchatBot.Core
 
             try
             {
-                return _messages.Take(token);
+                return _userCommands.Take(token);
             }
             catch (OperationCanceledException) // TODO rewrite without exception
             {
@@ -61,9 +63,15 @@ namespace KotchatBot.Core
             }
         }
 
-        private async Task HandleMessages()
+        public void Stop()
         {
-            while (true)
+            _cts.Cancel();
+            _log.Info("Cancelling");
+        }
+
+        private async Task WokerLoopAsync()
+        {
+            while (!_cts.IsCancellationRequested)
             {
                 var feed = await _client.GetStringAsync(_messagesFeedAddress);
                 var messages = JsonConvert.DeserializeObject<FeedItem[]>(feed);
@@ -75,7 +83,7 @@ namespace KotchatBot.Core
                 foreach (var m in newMessages.OrderBy(x => x.date))
                 {
                     var postNum = m.count.ToString();
-                    _messages.Add((postNum, m.body));
+                    _userCommands.Add((postNum, m.body));
                     _processedMessages.Add(postNum);
 
                     try
@@ -90,7 +98,7 @@ namespace KotchatBot.Core
                     }
                 }
 
-                await Task.Delay(_sleepTime);
+                await Utils.GetResultOrCancelledAsync(async () => await Task.Delay(_sleepTime, _cts.Token));
             }
         }
     }

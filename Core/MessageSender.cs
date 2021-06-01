@@ -1,3 +1,5 @@
+using KotchatBot.Interfaces;
+using KotchatBot.Core;
 using NLog;
 using System;
 using System.Collections.Concurrent;
@@ -6,21 +8,23 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace KotchatBot.Core
 {
-    public class MessageSender
+    public class MessageSender : IWorker
     {
         private readonly Uri _postAddress;
         private readonly string _name;
         private readonly BlockingCollection<string> _messagesQ;
-        private DateTime _lastMessageSent;
         private readonly Logger _log;
         private readonly HttpClient _client;
         private readonly CookieContainer _cookies;
         private const string DATA_SEPARATOR = "______";
         private readonly bool _isInitialized = true;
+        private readonly CancellationTokenSource _cts;
+        private DateTime _lastMessageSent;
 
         public MessageSender(Uri postAddress, string name)
         {
@@ -33,6 +37,7 @@ namespace KotchatBot.Core
             _name = name;
             _messagesQ = new BlockingCollection<string>(new ConcurrentQueue<string>());
             _lastMessageSent = DateTime.MinValue;
+            _cts = new CancellationTokenSource();
             _log = LogManager.GetCurrentClassLogger();
 
             _cookies = new CookieContainer();
@@ -47,49 +52,13 @@ namespace KotchatBot.Core
             _client = new HttpClient(httpClientHandler);
             _isInitialized &= InitCookies();
 
-            Task.Factory.StartNew(() => SendingLoopAsync());
+            if (_isInitialized)
+            {
+                Task.Factory.StartNew(() => WokerLoopAsync());
+            }
 
             var initStateText = _isInitialized ? "initialized" : "not initialized";
             _log.Info($"Sender started {initStateText}");
-        }
-
-        private string HostWScheme(Uri uri) => $"{uri.Scheme}://{uri.Host}";
-
-        private bool InitCookies()
-        {
-            string sessionCookie = null;
-            string responseText = null;
-            var req = CreateRequest(HttpMethod.Get);
-
-            try
-            {
-                var resp = _client.SendAsync(req).ConfigureAwait(false).GetAwaiter().GetResult();
-                resp.EnsureSuccessStatusCode();
-                sessionCookie = resp.Headers.GetValues("Set-Cookie").FirstOrDefault();
-                responseText = resp.Content.ReadAsStringAsync().ConfigureAwait(false).GetAwaiter().GetResult();
-            }
-            catch (Exception ex)
-            {
-                // don't throw exceptions in constructor for safety
-                _log.Error(ex, "Getting cookies");
-                return false;
-            }
-            finally
-            {
-                req.Dispose();
-            }
-
-            if (string.IsNullOrEmpty(sessionCookie))
-            {
-                _log.Error($"Can't get session cookie:{Environment.NewLine}{responseText}");
-                return false;
-            }
-
-            var cookie = sessionCookie.Split(new[] { ";" }, StringSplitOptions.None).First();
-            _cookies.SetCookies(new Uri(HostWScheme(_postAddress)), cookie);
-
-            _log.Info($"Session cookie: {cookie}");
-            return true;
         }
 
         public void Send(string msg, string pictureName = null)
@@ -103,28 +72,48 @@ namespace KotchatBot.Core
             _messagesQ.Add(data);
         }
 
-        private async Task SendingLoopAsync()
+        public void Stop()
         {
-            while (true)
+            if (_isInitialized)
             {
-                var msg = _messagesQ.Take();
+                _cts.Cancel();
+                _log.Info("Cancelling");
+            }
+        }
+
+        private async Task WokerLoopAsync()
+        {
+            while (!_cts.IsCancellationRequested)
+            {
+                Utils.GetResultOrCancelled(() => _messagesQ.Take(_cts.Token), out var message);
+
+                if (_cts.IsCancellationRequested)
+                {
+                    return;
+                }
+
                 var waitTimeMsec =
                     TimeSpan.FromSeconds(3).TotalMilliseconds -
                     (DateTime.UtcNow - _lastMessageSent).TotalMilliseconds;
 
                 if (waitTimeMsec > 0)
                 {
-                    System.Threading.Thread.Sleep((int) waitTimeMsec);
+                    await Utils.GetResultOrCancelledAsync(async () => await Task.Delay((int) waitTimeMsec, _cts.Token));
+                }
+
+                if (_cts.IsCancellationRequested)
+                {
+                    return;
                 }
 
                 try
                 {
-                    var arr = msg.Split(new[] { DATA_SEPARATOR }, StringSplitOptions.None);
+                    var arr = message.Split(new[] { DATA_SEPARATOR }, StringSplitOptions.None);
                     await SendInternal(arr[0], arr[1]);
                 }
                 catch (Exception ex)
                 {
-                    _log.Error(ex, $"Message: {msg}{Environment.NewLine}");
+                    _log.Error(ex, $"Message: {message}{Environment.NewLine}");
                 }
                 _lastMessageSent = DateTime.UtcNow;
             }
@@ -160,7 +149,8 @@ namespace KotchatBot.Core
 
             try
             {
-                using (HttpResponseMessage response = await _client.SendAsync(request))
+
+                using (HttpResponseMessage response = await _client.SendAsync(request, _cts.Token))
                 {
                     response.EnsureSuccessStatusCode();
                     string response_content = await GetResponseContent(response);
@@ -175,6 +165,7 @@ namespace KotchatBot.Core
                     }
                 }
             }
+            catch (OperationCanceledException) { }
             catch (Exception e)
             {
                 _log.Error(e);
@@ -236,6 +227,45 @@ namespace KotchatBot.Core
             request.Headers.Add("Accept-Language", "en-US,en;q=0.9");
             request.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (LOL, Kek, Cheburek)");
             return request;
+        }
+
+        private string HostWScheme(Uri uri) => $"{uri.Scheme}://{uri.Host}";
+
+        private bool InitCookies()
+        {
+            string sessionCookie = null;
+            string responseText = null;
+            var req = CreateRequest(HttpMethod.Get);
+
+            try
+            {
+                var resp = _client.SendAsync(req).ConfigureAwait(false).GetAwaiter().GetResult();
+                resp.EnsureSuccessStatusCode();
+                sessionCookie = resp.Headers.GetValues("Set-Cookie").FirstOrDefault();
+                responseText = resp.Content.ReadAsStringAsync().ConfigureAwait(false).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                // don't throw exceptions in constructor for safety
+                _log.Error(ex, "Getting cookies");
+                return false;
+            }
+            finally
+            {
+                req.Dispose();
+            }
+
+            if (string.IsNullOrEmpty(sessionCookie))
+            {
+                _log.Error($"Can't get session cookie:{Environment.NewLine}{responseText}");
+                return false;
+            }
+
+            var cookie = sessionCookie.Split(new[] { ";" }, StringSplitOptions.None).First();
+            _cookies.SetCookies(new Uri(HostWScheme(_postAddress)), cookie);
+
+            _log.Info($"Session cookie: {cookie}");
+            return true;
         }
     }
 }

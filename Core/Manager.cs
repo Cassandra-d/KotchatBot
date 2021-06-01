@@ -8,47 +8,57 @@ using System.Threading;
 
 namespace KotchatBot.Core
 {
-    public class Manager
+    public class Manager : IWorker
     {
+        private const int NEXT_MESSAGE_WAIT_INTERVAL_SECONDS = 1;
+
         private readonly MessageSender _messageSender;
         private readonly UserMessagesParser _userMessagesParser;
         private readonly IRandomImageSource[] _imagesSource;
         private readonly Logger _log;
+        private readonly CancellationTokenSource _cts;
 
         public Manager(MessageSender messageSender, UserMessagesParser userMessagesParser, IEnumerable<IRandomImageSource> imagesSource)
         {
             _messageSender = messageSender;
             _userMessagesParser = userMessagesParser;
             _imagesSource = imagesSource.ToArray();
-            Task.Factory.StartNew(() => MainLoop());
-
             _log = LogManager.GetCurrentClassLogger();
+            _cts = new CancellationTokenSource();
+
+            Task.Factory.StartNew(() => WorkerLoop());
+
             _log.Info($"Manager started");
         }
 
-        private async Task MainLoop()
+        private async Task WorkerLoop()
         {
-            while (true)
+            while (!_cts.IsCancellationRequested)
             {
-                var message = _userMessagesParser.GetNextMessage(TimeSpan.FromSeconds(3));
-                if (message != null)
+                var message = _userMessagesParser.GetNextMessage(TimeSpan.FromSeconds(NEXT_MESSAGE_WAIT_INTERVAL_SECONDS));
+                if (message == null)
                 {
-                    try
-                    {
-                        var image = await _imagesSource[0].NextFile();
-                        _messageSender.Send($">>{message.Value.id}", image);
-                    }
-                    catch (Exception ex)
-                    {
-                        _log.Error(ex);
-                    }
+                    continue;
+                }
+
+                try
+                {
+                    var image = await _imagesSource[0].NextFile();
+                    _messageSender.Send($">>{message.Value.id}", image);
+                }
+                catch (Exception ex)
+                {
+                    _log.Error(ex);
                 }
             }
         }
 
-        public async Task Stop(CancellationToken token)
+        public void Stop()
         {
-            throw new NotImplementedException();
+            _cts.Cancel();
+            _messageSender.Stop();
+            _userMessagesParser.Stop();
+            _log.Info("Cancelling");
         }
     }
 }
