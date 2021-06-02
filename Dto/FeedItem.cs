@@ -5,7 +5,7 @@ namespace KotchatBot.Dto
     public class FeedItem
     {
         public string _id { get; set; }
-        public int count { get; set; }
+        public string count { get; set; }
         public string country_name { get; set; }
         public string country { get; set; }
         public string trip { get; set; }

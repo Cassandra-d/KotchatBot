@@ -7,9 +7,9 @@ namespace KotchatBot.Interfaces
     {
         void AddImgurImages(string[] images, DateTime date, string tag);
         ImgurImageDto[] GetImgurImagesForDate(DateTime today, string tag);
+        void MarkImgurImageAsShown(ImgurImageDto image);
 
         string[] GetAllPostsWithResponsesForLastDay();
-        void MarkImgurImageAsShown(ImgurImageDto image);
         void MessageSentTo(string postNumber);
     }
 }

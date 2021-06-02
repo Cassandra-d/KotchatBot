@@ -13,7 +13,7 @@ namespace IoC
                 {
                     var config = c.Resolve<KotchatBot.Configuration.ImgurDataSourceOptions>();
                     var ds = c.Resolve<KotchatBot.Interfaces.IDataStorage>();
-                    return new KotchatBot.Core.ImgurImageSource(config.ClientId, config.Tags, ds);
+                    return new KotchatBot.Core.ImgurImageSource(config.ClientId, ds);
                 })
                 .As<IRandomImageSource>();
 

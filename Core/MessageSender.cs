@@ -16,27 +16,27 @@ namespace KotchatBot.Core
     public class MessageSender : IWorker
     {
         private readonly Uri _postAddress;
-        private readonly string _name;
-        private readonly BlockingCollection<(string message, string pictureName)> _messagesQ;
+        private readonly string _botName;
+        private readonly BlockingCollection<(string message, string pictureImagePath)> _messagesQ;
         private readonly Logger _log;
         private readonly HttpClient _client;
         private readonly CookieContainer _cookies;
         private readonly bool _isInitialized = true;
         private readonly CancellationTokenSource _cts;
-        private DateTime _lastMessageSent;
+        private DateTime _lastMessageSentTimestamp;
 
-        public MessageSender(Uri postAddress, string name)
+        public MessageSender(Uri postAddress, string botName)
         {
-            if (string.IsNullOrEmpty(name))
+            if (string.IsNullOrEmpty(botName))
             {
-                throw new ArgumentException("message", nameof(name));
+                throw new ArgumentException(nameof(botName));
             }
 
             _postAddress = postAddress;
-            _name = name;
-            var internalCollection = new ConcurrentQueue<(string message, string pictureName)>();
-            _messagesQ = new BlockingCollection<(string message, string pictureName)>(internalCollection);
-            _lastMessageSent = DateTime.MinValue;
+            _botName = botName;
+            var internalCollection = new ConcurrentQueue<(string message, string pictureImagePath)>();
+            _messagesQ = new BlockingCollection<(string message, string pictureImagePath)>(internalCollection);
+            _lastMessageSentTimestamp = DateTime.MinValue;
             _cts = new CancellationTokenSource();
             _log = LogManager.GetCurrentClassLogger();
 
@@ -61,14 +61,14 @@ namespace KotchatBot.Core
             _log.Info($"Sender started {initStateText}");
         }
 
-        public void Send(string msg, string pictureName = null)
+        public void Send(string msg, string pictureFilePath = null)
         {
             if (!_isInitialized)
             {
                 throw new InvalidOperationException("Sender isn't initialized properly");
             }
 
-            _messagesQ.Add((msg, pictureName));
+            _messagesQ.Add((msg, pictureFilePath));
         }
 
         public void Stop()
@@ -93,7 +93,7 @@ namespace KotchatBot.Core
 
                 var waitTimeMsec =
                     TimeSpan.FromSeconds(3).TotalMilliseconds -
-                    (DateTime.UtcNow - _lastMessageSent).TotalMilliseconds;
+                    (DateTime.UtcNow - _lastMessageSentTimestamp).TotalMilliseconds;
 
                 if (waitTimeMsec > 0)
                 {
@@ -107,13 +107,13 @@ namespace KotchatBot.Core
 
                 try
                 {
-                    await SendInternal(message.message, message.pictureName);
+                    await SendInternal(message.message, message.pictureImagePath);
                 }
                 catch (Exception ex)
                 {
                     _log.Error(ex, $"Message: {message}{Environment.NewLine}");
                 }
-                _lastMessageSent = DateTime.UtcNow;
+                _lastMessageSentTimestamp = DateTime.UtcNow;
             }
         }
 
@@ -124,8 +124,8 @@ namespace KotchatBot.Core
             ByteArrayContent content = null;
             if (!string.IsNullOrEmpty(imagePath))
             {
-                var filename = System.IO.Path.GetFileName(imagePath);
-                var bytes = System.IO.File.ReadAllBytes(imagePath);
+                var filename = Path.GetFileName(imagePath);
+                var bytes = File.ReadAllBytes(imagePath);
                 content = new ByteArrayContent(bytes);
                 content.Headers.ContentType = new MediaTypeHeaderValue(MimeMapping.MimeUtility.GetMimeMapping(imagePath));
                 content.Headers.ContentDisposition = new ContentDispositionHeaderValue("form-data")
@@ -136,7 +136,7 @@ namespace KotchatBot.Core
             }
 
             var form = new MultipartFormDataContent();
-            form.Add(new StringContent(_name), "\"name\"");
+            form.Add(new StringContent(_botName), "\"name\"");
             form.Add(new StringContent(""), "\"convo\"");
             form.Add(new StringContent(msg), "\"body\"");
             if (content != null)
@@ -147,7 +147,6 @@ namespace KotchatBot.Core
 
             try
             {
-
                 using (HttpResponseMessage response = await _client.SendAsync(request, _cts.Token))
                 {
                     response.EnsureSuccessStatusCode();

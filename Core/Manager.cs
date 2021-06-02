@@ -19,7 +19,8 @@ namespace KotchatBot.Core
         private readonly Logger _log;
         private readonly CancellationTokenSource _cts;
 
-        public Manager(MessageSender messageSender, UserMessagesParser userMessagesParser, IDataStorage dataStorage, IEnumerable<IRandomImageSource> imagesSource)
+        public Manager(MessageSender messageSender, UserMessagesParser userMessagesParser,
+            IDataStorage dataStorage, IEnumerable<IRandomImageSource> imagesSource)
         {
             _messageSender = messageSender;
             _userMessagesParser = userMessagesParser;

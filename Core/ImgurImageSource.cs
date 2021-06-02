@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace KotchatBot.Core
@@ -14,64 +15,66 @@ namespace KotchatBot.Core
     public class ImgurImageSource : IRandomImageSource
     {
         private readonly string _clientId;
-        private readonly string[] _tags;
-        private readonly IDataStorage _dataSource;
+        private readonly IDataStorage _dataStorage;
         private readonly Logger _log;
         private readonly HttpClient _httpClient;
-        private Random _rnd;
-        private bool _isInitialized = false; // TODO refactor
+        private readonly Random _rnd;
+        private readonly ManualResetEvent _imgurDataInitializationEvent;
 
         public string Command => ".imgur";
 
-        public ImgurImageSource(string clientId, string[] tags, IDataStorage ds)
+        public ImgurImageSource(string clientId, IDataStorage ds)
         {
             if (string.IsNullOrEmpty(clientId))
             {
-                throw new ArgumentException("message", nameof(clientId));
+                throw new ArgumentException(nameof(clientId));
+            }
+            if (ds == null)
+            {
+                throw new ArgumentNullException(nameof(ds));
             }
 
             _clientId = clientId;
-            _tags = tags ?? throw new ArgumentNullException(nameof(tags));
-            _dataSource = ds ?? throw new ArgumentNullException(nameof(ds));
-
+            _dataStorage = ds;
             _log = LogManager.GetCurrentClassLogger();
             _httpClient = new HttpClient();
             _rnd = new Random();
+            _imgurDataInitializationEvent = new ManualResetEvent(false);
 
-            Task.Factory.StartNew(() => InitDatabase());
+            Task.Factory.StartNew(() => ImgurFetchImagesLoop());
+
             _log.Info($"Imgur source started");
         }
 
-        public async Task<string> NextFile(string parameter)
+        public async Task<string> NextFile(string tag)
         {
-            while (!_isInitialized)
-            {
-                await Task.Delay(TimeSpan.FromSeconds(5));
-            }
-
             var today = DateTime.UtcNow.Date;
-            var images = _dataSource.GetImgurImagesForDate(today, parameter).ToList();
+            var images = _dataStorage.GetImgurImagesForDate(today, tag).ToList();
 
-            if (!string.IsNullOrEmpty(parameter) && images.Count == 0)
+            if (images.Count == 0) // no initialized images yet
             {
-                // we don't have images for that specific subreddit
-                // let's upload several
-                var baseAddress = $"https://api.imgur.com/3/gallery/r/{parameter}/time/day/";
-                _dataSource.AddImgurImages(await GetImgurImages(0, baseAddress), today, parameter);
-                _dataSource.AddImgurImages(await GetImgurImages(0, baseAddress), today, parameter);
-
-                images = _dataSource.GetImgurImagesForDate(today, parameter).ToList();
-
-                if (images.Count == 0)
+                if (string.IsNullOrEmpty(tag)) // .imgur command without argument
                 {
-                    // Imgur has no pics for parameter, let's get default
-                    images = _dataSource.GetImgurImagesForDate(today, tag: "").ToList();
+                    // let's just wait till initialization is finished
+                    _imgurDataInitializationEvent.WaitOne();
+                }
+                else // command with specific subreddit like '.imgur fanny'
+                {
+                    await ImgurFetchImagesForTag(tag, today);
+                    images = _dataStorage.GetImgurImagesForDate(today, tag).ToList();
+
+                    if (images.Count == 0) // specific tag doesn't exist
+                    {
+                        // let's return generic images without any tag then
+                        images = _dataStorage.GetImgurImagesForDate(today, tag: "").ToList();
+                    }
                 }
             }
 
             var totallyRandomImage = images[_rnd.Next(0, images.Count - 1)];
 
-            while (images.Count != 0)
+            int attemptsLeft = 600;
+            while (attemptsLeft > 0)
             {
                 var index = _rnd.Next(0, images.Count - 1);
                 var image = images[index];
@@ -80,10 +83,12 @@ namespace KotchatBot.Core
                     totallyRandomImage = image;
                     break;
                 }
+                attemptsLeft -= 1;
             }
+            // if we run out of attempts (all images were already shown, let's return random already shown image)
 
             var fullPath = await DownloadFile(totallyRandomImage.Link);
-            _dataSource.MarkImgurImageAsShown(totallyRandomImage);
+            _dataStorage.MarkImgurImageAsShown(totallyRandomImage);
             return fullPath;
         }
 
@@ -92,32 +97,19 @@ namespace KotchatBot.Core
             return await NextFile("");
         }
 
-        private async Task<string> DownloadFile(string uri)
+        private async Task ImgurFetchImagesForTag(string tag, DateTime today)
         {
-            string fileName = uri.Substring(uri.LastIndexOf('/') + 1);
-            var directory = Directory.GetCurrentDirectory() + "\\imgs\\";
-            if (!Directory.Exists(directory))
-            {
-                Directory.CreateDirectory(directory);
-            }
-
-            var fullPath = directory + fileName;
-
-            if (!File.Exists(fullPath))
-            {
-                byte[] fileBytes = await _httpClient.GetByteArrayAsync(uri);
-                File.WriteAllBytes(fullPath, fileBytes);
-            }
-
-            return fullPath;
+            var baseAddress = $"https://api.imgur.com/3/gallery/r/{tag}/time/day/";
+            _dataStorage.AddImgurImages(await GetImgurImages(0, baseAddress), today, tag);
+            _dataStorage.AddImgurImages(await GetImgurImages(0, baseAddress), today, tag);
         }
 
-        private async Task InitDatabase()
+        private async Task ImgurFetchImagesLoop()
         {
-            while (true)
+            while (true) // no graceful cancellation because this logic does not need it
             {
                 var today = DateTime.UtcNow.Date;
-                var imagesCount = _dataSource.GetImgurImagesForDate(today, tag: "").Length;
+                var imagesCount = _dataStorage.GetImgurImagesForDate(today, tag: "").Length;
 
                 if (imagesCount < 500)
                 {
@@ -137,15 +129,15 @@ namespace KotchatBot.Core
                         }
                         catch (Exception ex)
                         {
-                            _log.Error(ex, $"Can't get data from Imgur");
+                            _log.Error(ex, $"Can't fetch images from Imgur");
                             break;
                         }
 
-                        _dataSource.AddImgurImages(images, today, tag: "");
+                        _dataStorage.AddImgurImages(images, today, tag: "");
                     }
                 }
 
-                _isInitialized = true;
+                _imgurDataInitializationEvent.Set();
                 _log.Info($"Imgur source initialized");
 
                 await Task.Delay(TimeSpan.FromMinutes(10));
@@ -190,6 +182,26 @@ namespace KotchatBot.Core
                     return images;
                 }
             }
+        }
+
+        private async Task<string> DownloadFile(string uri)
+        {
+            string fileName = uri.Substring(uri.LastIndexOf('/') + 1);
+            var directory = Directory.GetCurrentDirectory() + "\\imgs\\";
+            if (!Directory.Exists(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            var fullPath = directory + fileName;
+
+            if (!File.Exists(fullPath))
+            {
+                byte[] fileBytes = await _httpClient.GetByteArrayAsync(uri);
+                File.WriteAllBytes(fullPath, fileBytes);
+            }
+
+            return fullPath;
         }
     }
 }

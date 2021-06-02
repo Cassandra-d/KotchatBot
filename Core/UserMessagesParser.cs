@@ -22,8 +22,7 @@ namespace KotchatBot.Core
         private readonly HttpClient _client;
         private readonly Logger _log;
         private readonly CancellationTokenSource _cts;
-
-        private BlockingCollection<CommandDto> _usersCommands;
+        private readonly BlockingCollection<CommandDto> _usersCommands;
 
         private readonly Lazy<HashSet<string>> _processedMessages;
         private HashSet<string> ProcessedMessages => _processedMessages.Value;
@@ -35,35 +34,29 @@ namespace KotchatBot.Core
                 throw new ArgumentException("message", nameof(messagesFeedAddress));
             }
 
+            _log = LogManager.GetCurrentClassLogger();
             _messagesFeedAddress = messagesFeedAddress;
             _dataStorage = dataStorage;
             _client = new HttpClient();
-            _processedMessages = new Lazy<HashSet<string>>(() => _dataStorage.GetAllPostsWithResponsesForLastDay().ToHashSet(), isThreadSafe: true);
-            _log = LogManager.GetCurrentClassLogger();
             _cts = new CancellationTokenSource();
+
+            _processedMessages = new Lazy<HashSet<string>>(
+                () => _dataStorage.GetAllPostsWithResponsesForLastDay().ToHashSet(), isThreadSafe: true);
             _usersCommands = new BlockingCollection<CommandDto>(new ConcurrentQueue<CommandDto>());
 
             Task.Factory.StartNew(() => WokerLoopAsync());
             _log.Info($"Feed parser started");
         }
 
-        public CommandDto GetNextMessage(TimeSpan waitInterval) // TODO make async
+        public CommandDto GetNextMessage(TimeSpan waitInterval)
         {
-            var cts = new CancellationTokenSource();
-            cts.CancelAfter(waitInterval);
-            var token = cts.Token;
+            using (var cts = new CancellationTokenSource())
+            {
+                cts.CancelAfter(waitInterval);
 
-            try
-            {
-                return _usersCommands.Take(token);
-            }
-            catch (OperationCanceledException) // TODO rewrite without exception
-            {
-                return null;
-            }
-            finally
-            {
-                cts.Dispose();
+                return Utils.GetResultOrCancelled(() => _usersCommands.Take(cts.Token), out var command)
+                    ? command
+                    : null;
             }
         }
 
@@ -88,16 +81,16 @@ namespace KotchatBot.Core
                 var feed = await _client.GetStringAsync(_messagesFeedAddress);
                 var newMessages = JsonConvert.DeserializeObject<FeedItem[]>(feed)
                     // if bot restarted, filter out old messages
-                    .Where(m => !ProcessedMessages.Contains(m.count.ToString())).ToArray();
+                    .Where(m => !ProcessedMessages.Contains(m.count)).ToArray();
 
                 foreach (var message in newMessages.OrderBy(x => x.date))
                 {
                     var matches = regex.Matches(message.body);
-                    var postNumber = message.count.ToString();
+                    var postNumber = message.count;
 
-                    foreach (Match m in matches)
+                    foreach (Match match in matches)
                     {
-                        CommandDto commandDto = ExtractCommand(postNumber, m);
+                        CommandDto commandDto = ExtractCommand(postNumber, match);
 
                         _usersCommands.Add(commandDto);
                         ProcessedMessages.Add(postNumber);

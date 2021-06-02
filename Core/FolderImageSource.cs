@@ -2,19 +2,19 @@ using KotchatBot.Interfaces;
 using NLog;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Security;
-using System.Threading;
 using System.Threading.Tasks;
 
 namespace KotchatBot.Core
 {
     public class FolderImageSource : IRandomImageSource
     {
-        private string[] _allFiles;
-        private HashSet<int> _usedFiles;
-        private Random _rnd;
+        private readonly Lazy<string[]> _allFiles;
+        private readonly Random _rnd;
         private readonly Logger _log;
+        private HashSet<int> _usedFiles;
 
         public string Command => ".random";
 
@@ -25,20 +25,38 @@ namespace KotchatBot.Core
                 throw new ArgumentException("message", nameof(path));
             }
 
-            if (!System.IO.Directory.Exists(path))
+            if (!Directory.Exists(path))
             {
                 throw new ArgumentException($"Directory {path} doesn't exist");
             }
 
             _log = LogManager.GetCurrentClassLogger();
-
-            var start = DateTime.UtcNow;
-            _allFiles = ListImages(path); // TODO make lazy
-            var finish = DateTime.UtcNow;
-            _log.Info($"Listing files took {(finish - start).TotalSeconds} seconds, found {_allFiles.Length} files");
-
+            _allFiles = new Lazy<string[]>(() => ListImages(path));
             _usedFiles = new HashSet<int>();
             _rnd = new Random();
+        }
+
+        public async Task<string> NextFile()
+        {
+            while (_usedFiles.Count != _allFiles.Value.Length)
+            {
+                var index = _rnd.Next(0, _allFiles.Value.Length - 1);
+                if (!_usedFiles.Contains(index))
+                {
+                    _usedFiles.Add(index);
+                    return _allFiles.Value[index];
+                }
+            }
+
+            _log.Info("All known files have been returned, starting to repeat already returned");
+            _usedFiles.Clear();
+            return await NextFile();
+        }
+
+        public async Task<string> NextFile(string parameter = null)
+        {
+            // this images source does not support 'parameter'
+            return await NextFile();
         }
 
         private string[] ListImages(string path)
@@ -48,13 +66,12 @@ namespace KotchatBot.Core
             return list.ToArray();
         }
 
-        private void ListImagesInternal(string directory, ICollection<string> foundFiles,
-            bool includeSubdirs = true, CancellationToken ct = default(CancellationToken))
+        private void ListImagesInternal(string directory, ICollection<string> foundFiles, bool includeSubdirs = true)
         {
             var images = new List<string>();
             try
             {
-                images.AddRange(System.IO.Directory.EnumerateFiles(directory, "*.*", System.IO.SearchOption.TopDirectoryOnly));
+                images.AddRange(Directory.EnumerateFiles(directory, "*.*", SearchOption.TopDirectoryOnly));
             }
             catch (SecurityException) { }
             catch (UnauthorizedAccessException) { }
@@ -70,13 +87,15 @@ namespace KotchatBot.Core
             images.Clear();
             images = null;
 
-            if (!includeSubdirs || ct.IsCancellationRequested)
+            if (!includeSubdirs)
+            {
                 return;
+            }
 
             IEnumerable<string> subDirs = new List<string>();
             try
             {
-                subDirs = System.IO.Directory.EnumerateDirectories(directory, "*", System.IO.SearchOption.TopDirectoryOnly);
+                subDirs = Directory.EnumerateDirectories(directory, "*", SearchOption.TopDirectoryOnly);
             }
             catch (SecurityException) { }
             catch (UnauthorizedAccessException) { }
@@ -86,29 +105,9 @@ namespace KotchatBot.Core
             }
 
             foreach (var subDir in subDirs)
-                ListImagesInternal(subDir, foundFiles, includeSubdirs, ct);
-        }
-
-        public async Task<string> NextFile()
-        {
-            while (_usedFiles.Count != _allFiles.Length)
             {
-                var index = _rnd.Next(0, _allFiles.Length - 1);
-                if (!_usedFiles.Contains(index))
-                {
-                    _usedFiles.Add(index);
-                    return _allFiles[index];
-                }
+                ListImagesInternal(subDir, foundFiles, includeSubdirs);
             }
-            // start all over again
-            _log.Info("All known files have been returned, starting to repeat already returned");
-            _usedFiles.Clear();
-            return await NextFile();
-        }
-
-        public Task<string> NextFile(string parameter = null)
-        {
-            return NextFile();
         }
     }
 }

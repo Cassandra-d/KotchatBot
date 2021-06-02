@@ -9,9 +9,9 @@ namespace KotchatBot.DataLayer
     public class DataStorage : IDataStorage
     {
         private const string GENERAL_DB_NAME = @"GeneralData.db";
-        private readonly LiteDatabase _generalDb; // TODO lazy singleton
+        private static readonly LiteDatabase _generalDb;
 
-        public DataStorage()
+        static DataStorage()
         {
             _generalDb = new LiteDatabase(GENERAL_DB_NAME);
             _generalDb.Mapper.EmptyStringToNull = false;
