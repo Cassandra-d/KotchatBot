@@ -9,6 +9,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Web;
 
 namespace KotchatBot.Core
 {
@@ -99,9 +100,9 @@ namespace KotchatBot.Core
 
         private async Task ImgurFetchImagesForTag(string tag, DateTime today)
         {
-            var baseAddress = $"https://api.imgur.com/3/gallery/r/{tag}/time/day/";
-            _dataStorage.AddImgurImages(await GetImgurImages(0, baseAddress), today, tag);
-            _dataStorage.AddImgurImages(await GetImgurImages(0, baseAddress), today, tag);
+            var baseAddress = $"https://api.imgur.com/3/gallery/search/time/all/";
+            _dataStorage.AddImgurImages(await GetImgurImages(0, baseAddress, tag), today, tag);
+            _dataStorage.AddImgurImages(await GetImgurImages(0, baseAddress, tag), today, tag);
         }
 
         private async Task ImgurFetchImagesLoop()
@@ -144,11 +145,15 @@ namespace KotchatBot.Core
             }
         }
 
-        private async Task<string[]> GetImgurImages(int pageNumber, string baseAddress)
+        private async Task<string[]> GetImgurImages(int pageNumber, string baseAddress, string query = null)
         {
-            string GetAddress(int page) => $"{baseAddress}{page}";
+            string GetAddress(int page, string q)
+            {
+                var res = $"{baseAddress}{page}";
+                return !string.IsNullOrEmpty(q) ? res + "?q=" + HttpUtility.UrlEncode(q) : res;
+            };
 
-            using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, GetAddress(pageNumber)))
+            using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, GetAddress(pageNumber, query)))
             {
                 request.Headers.Add("Connection", "keep-alive");
                 request.Headers.Authorization = new AuthenticationHeaderValue("Client-ID", _clientId);

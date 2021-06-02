@@ -68,11 +68,11 @@ namespace KotchatBot.Core
 
         private async Task WokerLoopAsync()
         {
-            var userCommandPattern = @"\.[a-z]+ *[^.]\w+";
+            var userCommandPattern = @"^\..*$";
             // should match:
-            //.command parameter but not the rest
+            //.command and the whole string is a parameter even another .command inside
             //Should not match at all.
-            //.command .differetCommand but not the rest
+            //.command
             //Should not match.Either
             var regex = new Regex(userCommandPattern);
 
@@ -85,18 +85,14 @@ namespace KotchatBot.Core
 
                 foreach (var message in newMessages.OrderBy(x => x.date))
                 {
-                    var matches = regex.Matches(message.body);
+                    var match = regex.Match(message.body);
                     var postNumber = message.count;
+                    CommandDto commandDto = ExtractCommand(postNumber, match);
 
-                    foreach (Match match in matches)
-                    {
-                        CommandDto commandDto = ExtractCommand(postNumber, match);
+                    _usersCommands.Add(commandDto);
+                    ProcessedMessages.Add(postNumber);
 
-                        _usersCommands.Add(commandDto);
-                        ProcessedMessages.Add(postNumber);
-
-                        _log.Info($"Found: {commandDto}");
-                    }
+                    _log.Info($"Found: {commandDto}");
                 }
 
                 await Utils.GetResultOrCancelledAsync(async () => await Task.Delay(USER_INPUT_WAIT_INTERVAL_SECONDS, _cts.Token));
@@ -105,11 +101,12 @@ namespace KotchatBot.Core
 
         private static CommandDto ExtractCommand(string postNumber, Match m)
         {
-            var data = m.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var data = m.Value.ToLower().Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var arguments = data.Length > 1 ? string.Join(" ", data, 1, data.Length - 1) : "";  // no StringBuilder because it's cheap here already
             return new CommandDto()
             {
                 Command = data[0],
-                CommandArgument = data.Length > 1 ? data[1] : "",
+                CommandArgument = arguments,
                 PostNumber = postNumber,
             };
         }
