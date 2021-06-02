@@ -87,6 +87,12 @@ namespace KotchatBot.Core
                 {
                     var match = regex.Match(message.body);
                     var postNumber = message.count;
+
+                    if (!match.Success)
+                    {
+                        continue;
+                    }
+
                     CommandDto commandDto = ExtractCommand(postNumber, match);
 
                     _usersCommands.Add(commandDto);
